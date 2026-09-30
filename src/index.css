@@ -1,0 +1,68 @@
+@import "tailwindcss";
+
+/*
+ * Palette: cool paper + slate ink, one cobalt accent.
+ * Cobalt means "goes out with the next publish": the Publish button and the
+ * edge on every changed cell share it. Rust marks missing translations.
+ */
+@theme {
+  --font-sans: "Atkinson Hyperlegible Next", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Atkinson Hyperlegible Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --color-canvas: #f2f4f7;
+  --color-surface: #ffffff;
+  --color-sunken: #f7f8fa;
+  --color-ink: #1b2233;
+  --color-ink-soft: #465066;
+  --color-muted: #6c7589;
+  --color-line: #dde1e8;
+  --color-line-strong: #c6ccd7;
+
+  --color-cobalt: #2f45d8;
+  --color-cobalt-deep: #2233b0;
+  --color-cobalt-soft: #e9ecfd;
+  --color-rust: #b0461c;
+  --color-rust-soft: #fbeee7;
+  --color-moss: #1e7549;
+  --color-moss-soft: #e4f3ea;
+}
+
+@layer base {
+  html {
+    color: var(--color-ink);
+    background: var(--color-canvas);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    font-family: var(--font-sans);
+    font-size: 15px;
+    line-height: 1.5;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-cobalt);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: var(--color-cobalt-soft);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+.animate-rise {
+  animation: rise 160ms ease-out;
+}

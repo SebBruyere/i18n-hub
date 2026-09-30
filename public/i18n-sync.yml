@@ -1,0 +1,56 @@
+# i18n sync: pulls a release from i18n Hub and opens a pull request with the locale files.
+#
+# Setup in this repo:
+#   1. Settings > Secrets and variables > Actions
+#        variable  I18N_API_URL  e.g. https://i18n-hub.vercel.app
+#        secret    I18N_TOKEN    the PULL_TOKEN of i18n Hub
+#   2. Commit scripts/i18n-pull.mjs (curl -o scripts/i18n-pull.mjs <I18N_API_URL>/i18n-pull.mjs)
+#   3. Replace I18N_PROJECT and I18N_OUT_DIR below.
+#   4. In i18n Hub, add a "GitHub Actions workflow" deploy target pointing at this file.
+#      "Allow GitHub Actions to create and approve pull requests" must be enabled under
+#      Settings > Actions > General.
+name: i18n sync
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release to pull (empty = the live release)
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: i18n-sync
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Pull translations
+        run: node scripts/i18n-pull.mjs
+        env:
+          I18N_API_URL: ${{ vars.I18N_API_URL }}
+          I18N_TOKEN: ${{ secrets.I18N_TOKEN }}
+          I18N_PROJECT: your-project-slug
+          I18N_OUT_DIR: src/locales
+          I18N_VERSION: ${{ inputs.version }}
+
+      - name: Open pull request
+        uses: peter-evans/create-pull-request@v8
+        with:
+          branch: i18n/sync
+          delete-branch: true
+          commit-message: 'chore(i18n): sync translations${{ inputs.version && format('' v{0}'', inputs.version) || '''' }}'
+          title: 'chore(i18n): sync translations${{ inputs.version && format('' v{0}'', inputs.version) || '''' }}'
+          body: Translations pulled from i18n Hub. Merge to ship them with the next release of this app.
