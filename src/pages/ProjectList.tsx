@@ -20,7 +20,7 @@ export function ProjectList() {
     <div className="mx-auto max-w-5xl px-5 py-10">
       <div className="mb-6 flex items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Projects</h1>
+          <h1 className="text-2xl font-medium text-zinc-900 dark:text-white">Projects</h1>
           <p className="mt-1 text-sm text-muted">Each project is one app’s set of strings and the releases its builds pull.</p>
         </div>
         <Button variant="primary" onClick={() => setCreating(true)}>

@@ -29,8 +29,8 @@ function KeyList({ label, keys, tone }: { label: string; keys: string[]; tone: s
       <h3 className={`text-sm font-semibold ${tone}`}>
         {label} ({keys.length})
       </h3>
-      <p className="mt-1 font-mono text-[13px] leading-relaxed break-words text-ink-soft">
-        {shown.join(', ')}
+      <p className="mt-1 text-[13px] leading-relaxed break-words text-ink-soft">
+        <span className="font-mono">{shown.join(', ')}</span>
         {keys.length > shown.length && ` and ${keys.length - shown.length} more`}
       </p>
     </div>

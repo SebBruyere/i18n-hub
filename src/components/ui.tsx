@@ -1,5 +1,21 @@
+/**
+ * i18n Hub's building blocks, rendered with Bodyguard's design system so the hub looks
+ * like the dashboard. Pages keep this small, HTML-like API; the mapping to design-system
+ * props lives here.
+ */
 import {
-  useEffect,
+  Button as DsButton,
+  Checkbox as DsCheckbox,
+  Heading,
+  Input as DsInput,
+  Label,
+  Modal,
+  Spinner as DsSpinner,
+  TextArea as DsTextArea,
+  type ButtonKind,
+  type SpinnerSize,
+} from '@bodyguard-ai/design-system'
+import {
   useId,
   useRef,
   useState,
@@ -15,68 +31,70 @@ const cx = (...parts: (string | false | null | undefined)[]) => parts.filter(Boo
 /* ---------- buttons ---------- */
 
 type Variant = 'primary' | 'secondary' | 'ghost' | 'danger'
-const variants: Record<Variant, string> = {
-  primary: 'bg-cobalt text-white hover:bg-cobalt-deep disabled:bg-cobalt/40',
-  secondary: 'bg-surface text-ink border border-line-strong hover:border-ink-soft disabled:text-muted',
-  ghost: 'text-ink-soft hover:bg-ink/5 hover:text-ink disabled:text-muted',
-  danger: 'bg-surface text-rust border border-rust/40 hover:bg-rust-soft disabled:opacity-50',
+const kinds: Record<Variant, ButtonKind> = {
+  primary: 'primary',
+  secondary: 'tertiary',
+  ghost: 'tertiary-v2',
+  danger: 'destructive',
 }
 
 export function Button({
   variant = 'secondary',
   size = 'md',
   busy,
-  className,
-  children,
   disabled,
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant; size?: 'sm' | 'md'; busy?: boolean }) {
-  return (
-    <button
-      type="button"
-      {...props}
-      disabled={disabled || busy}
-      className={cx(
-        'inline-flex shrink-0 items-center justify-center gap-2 rounded-md font-medium whitespace-nowrap transition-colors disabled:cursor-not-allowed',
-        size === 'sm' ? 'h-8 px-3 text-[13px]' : 'h-10 px-4 text-sm',
-        variants[variant],
-        className,
-      )}
-    >
-      {busy && <Spinner />}
-      {children}
-    </button>
-  )
+  return <DsButton {...props} kind={kinds[variant]} size={size} disabled={disabled || busy} loading={busy} />
 }
 
-export function Spinner({ className }: { className?: string }) {
-  return (
-    <svg className={cx('size-4 animate-spin', className)} viewBox="0 0 24 24" fill="none" aria-hidden>
-      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeOpacity="0.25" strokeWidth="3" />
-      <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-    </svg>
-  )
+export function Spinner({ size = 'sm', className }: { size?: SpinnerSize; className?: string }) {
+  return <DsSpinner size={size} className={className} />
 }
 
 /* ---------- form controls ---------- */
 
-const control =
-  'rounded-md border border-line-strong bg-surface px-3 text-[15px] text-ink placeholder:text-muted/70 focus:border-cobalt focus:outline-none focus:ring-3 focus:ring-cobalt/15 disabled:bg-sunken'
+// The design system wraps each control in a div: sizing and spacing classes go on that
+// wrapper so they still lay the control out, everything else styles the control itself.
+const LAYOUT = /^(?:[a-z0-9-]+:)*-?(?:w-|min-w-|max-w-|flex-|grow|shrink|basis-|self-|order-|col-|row-|m[trblxy]?-)/
+
+function splitLayout(className = '') {
+  const wrapper: string[] = []
+  const control: string[] = []
+  for (const c of className.split(/\s+/).filter(Boolean)) (LAYOUT.test(c) ? wrapper : control).push(c)
+  return { wrapper: width(wrapper.join(' ')), control: control.join(' ') }
+}
 
 /** Full width unless the caller sets a width (no class merging library here). */
-const width = (className?: string) => (/(^|\s)w-/.test(className ?? '') ? '' : 'w-full')
+const width = (className?: string) => (/(^|\s)w-/.test(className ?? '') ? (className ?? '') : cx('w-full', className))
 
-export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElement>) {
-  return <input {...props} className={cx(control, width(className), 'h-10', className)} />
+type TextValue = { value?: string; defaultValue?: string }
+
+export function Input({ className, ...props }: Omit<InputHTMLAttributes<HTMLInputElement>, keyof TextValue> & TextValue) {
+  const { wrapper, control } = splitLayout(className)
+  return <DsInput bordered {...props} className={control} containerClassName={wrapper} />
 }
 
-export function Textarea({ className, ...props }: TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return <textarea {...props} className={cx(control, width(className), 'py-2 leading-snug', className)} />
+export function Textarea({
+  className,
+  rows,
+  ...props
+}: Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, 'style' | keyof TextValue> & TextValue) {
+  const { wrapper, control } = splitLayout(className)
+  // Grows with its content from `rows` lines, like the dashboard's text areas.
+  return <DsTextArea bordered {...props} minRows={rows} className={cx('min-h-0', control)} containerClassName={wrapper} />
 }
 
+/** A native select (it keeps <option> children) dressed like the design system's controls. */
 export function Select({ className, children, ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
   return (
-    <select {...props} className={cx(control, width(className), 'h-10 pr-8', className)}>
+    <select
+      {...props}
+      className={cx(
+        'form-select block h-8 rounded-md border-0 bg-white py-0 pr-8 pl-3 text-sm text-zinc-900 shadow-xs ring-1 ring-zinc-300 focus:ring-2 focus:ring-primary-500 disabled:opacity-40 dark:bg-zinc-800 dark:text-white dark:ring-zinc-700',
+        width(className),
+      )}
+    >
       {children}
     </select>
   )
@@ -95,12 +113,10 @@ export function Field({
 }) {
   const id = useId()
   return (
-    <div className={cx('flex flex-col gap-1.5', className)}>
-      <label htmlFor={id} className="text-sm font-semibold text-ink">
-        {label}
-      </label>
+    <div className={cx('flex flex-col', className)}>
+      <Label id={id}>{label}</Label>
       {children(id)}
-      {hint && <p className="text-[13px] leading-snug text-muted">{hint}</p>}
+      {hint && <p className="mt-1 text-xs leading-snug text-zinc-500 dark:text-zinc-400">{hint}</p>}
     </div>
   )
 }
@@ -116,12 +132,7 @@ export function Checkbox({
 }) {
   return (
     <label className="flex cursor-pointer items-start gap-2.5 text-sm">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        className="mt-0.5 size-4 accent-cobalt"
-      />
+      <DsCheckbox checked={checked} onChange={onChange} className="mt-0.5" />
       <span>{children}</span>
     </label>
   )
@@ -136,66 +147,63 @@ export function Dialog({
   footer,
   wide,
 }: {
-  title: string
+  title: ReactNode
   onClose: () => void
   children: ReactNode
   footer?: ReactNode
   wide?: boolean
 }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
-    addEventListener('keydown', onKey)
-    const overflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    return () => {
-      removeEventListener('keydown', onKey)
-      document.body.style.overflow = overflow
-    }
-  }, [onClose])
-
   return (
-    <div
-      className="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-ink/35 px-4 py-[8vh]"
-      onMouseDown={(e) => e.target === e.currentTarget && onClose()}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        className={cx(
-          'animate-rise w-full rounded-xl bg-surface shadow-[0_24px_64px_-16px_rgb(27_34_51/0.45)]',
-          wide ? 'max-w-3xl' : 'max-w-lg',
-        )}
-      >
-        <div className="flex items-center justify-between gap-4 border-b border-line px-6 py-4">
-          <h2 className="text-lg font-semibold">{title}</h2>
-          <button onClick={onClose} className="rounded p-1 text-muted hover:text-ink" aria-label="Close">
-            <svg viewBox="0 0 20 20" className="size-5" fill="none" stroke="currentColor" strokeWidth="1.8">
-              <path d="M5 5l10 10M15 5L5 15" strokeLinecap="round" />
-            </svg>
-          </button>
-        </div>
-        <div className="px-6 py-5">{children}</div>
-        {footer && <div className="flex justify-end gap-2 border-t border-line bg-sunken px-6 py-3.5 rounded-b-xl">{footer}</div>}
-      </div>
-    </div>
+    <Modal isOpen onClose={onClose} size={wide ? '3xl' : 'lg'}>
+      <Heading as="h2" size="md" className="px-6 pt-5">
+        {title}
+      </Heading>
+      <div className="px-6 py-4">{children}</div>
+      {footer && <div className="flex justify-end gap-2 border-t border-zinc-300 px-6 py-3 dark:border-zinc-700">{footer}</div>}
+    </Modal>
   )
 }
 
 /* ---------- misc ---------- */
 
+/** A key name (or another identifier) in running text: always monospace. */
+export function Code({ children }: { children: ReactNode }) {
+  return <code className="font-mono">{children}</code>
+}
+
+/**
+ * Server messages quote identifiers: `"inbox.count_one" already exists`, `Key "x" does not
+ * exist`. Those quoted parts become <Code>, without the quotes.
+ */
+export function codeQuoted(text: string): ReactNode {
+  const parts = text.split(/"([^"\n]+)"/)
+  if (parts.length === 1) return text
+  return parts.map((part, i) => (i % 2 ? <Code key={i}>{part}</Code> : part))
+}
+
 export function LangTag({ lang, base }: { lang: string; base?: boolean }) {
   return (
     <span
       className={cx(
-        'inline-flex h-6 items-center rounded px-1.5 font-mono text-[12.5px]',
-        base ? 'bg-ink text-white' : 'bg-ink/[0.06] text-ink-soft',
+        'inline-flex h-5 items-center rounded px-1.5 font-mono text-xs font-medium',
+        base ? 'bg-primary-500 text-white' : 'bg-zinc-200 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200',
       )}
       title={base ? 'Base language' : undefined}
     >
       {lang}
     </span>
   )
+}
+
+const languageNames = new Intl.DisplayNames(['en'], { type: 'language' })
+
+/** "fr" -> "French", "pt-BR" -> "Brazilian Portuguese"; falls back to the code itself. */
+export function languageName(lang: string) {
+  try {
+    return languageNames.of(lang) ?? lang
+  } catch {
+    return lang
+  }
 }
 
 export function CodeBlock({ code, label }: { code: string; label?: string }) {
@@ -208,14 +216,14 @@ export function CodeBlock({ code, label }: { code: string; label?: string }) {
     timer.current = window.setTimeout(() => setCopied(false), 1500)
   }
   return (
-    <div className="overflow-hidden rounded-lg border border-line bg-[#1f2536]">
+    <div className="overflow-hidden rounded-md bg-zinc-900 shadow-xs dark:bg-zinc-950">
       <div className="flex items-center justify-between border-b border-white/10 px-3 py-1.5">
-        <span className="text-[12.5px] text-white/60">{label}</span>
-        <button onClick={copy} className="rounded px-2 py-0.5 text-[12.5px] text-white/80 hover:bg-white/10 hover:text-white">
+        <span className="text-xs text-zinc-400">{label}</span>
+        <button onClick={copy} className="rounded px-2 py-0.5 text-xs text-zinc-300 hover:bg-white/10 hover:text-white">
           {copied ? 'Copied' : 'Copy'}
         </button>
       </div>
-      <pre className="overflow-x-auto px-4 py-3 font-mono text-[13px] leading-relaxed text-[#e6e9f2]">
+      <pre className="overflow-x-auto px-4 py-3 font-mono text-[13px] leading-relaxed text-zinc-100">
         <code>{code}</code>
       </pre>
     </div>
@@ -224,9 +232,11 @@ export function CodeBlock({ code, label }: { code: string; label?: string }) {
 
 export function Empty({ title, children, action }: { title: string; children?: ReactNode; action?: ReactNode }) {
   return (
-    <div className="flex flex-col items-start gap-3 rounded-lg border border-dashed border-line-strong bg-surface/60 px-6 py-10">
-      <h3 className="text-base font-semibold">{title}</h3>
-      {children && <div className="max-w-prose text-sm text-ink-soft">{children}</div>}
+    <div className="flex flex-col items-start gap-3 rounded-lg bg-white px-6 py-8 shadow-xs dark:bg-zinc-800">
+      <Heading as="h3" size="md">
+        {title}
+      </Heading>
+      {children && <div className="max-w-prose text-sm text-zinc-600 dark:text-zinc-300">{children}</div>}
       {action}
     </div>
   )

@@ -60,4 +60,15 @@ export const SCHEMA: string[] = [
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`,
   `CREATE INDEX IF NOT EXISTS deploy_logs_project_idx ON deploy_logs (project_id, created_at DESC)`,
+  // Every change to a translation: value NULL means it was cleared, previous NULL that it was empty.
+  `CREATE TABLE IF NOT EXISTS translation_history (
+    id SERIAL PRIMARY KEY,
+    key_id INT NOT NULL REFERENCES translation_keys(id) ON DELETE CASCADE,
+    language TEXT NOT NULL,
+    value TEXT,
+    previous TEXT,
+    source TEXT NOT NULL,
+    changed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS translation_history_key_idx ON translation_history (key_id, changed_at DESC)`,
 ]

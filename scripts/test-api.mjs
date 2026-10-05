@@ -137,6 +137,95 @@ r = await call('GET', '/api/pull/web-app?version=draft&format=nested', undefined
 assert.equal(r.status, 200)
 ok('keys: nested collision → 422 with message, rename fixes it')
 
+// Plurals are stored as i18next writes them (one key per form); the API keeps the forms together.
+await call('POST', '/api/projects', { name: 'Plurals', slug: 'plurals', languages: ['en', 'ru', 'ja'], baseLanguage: 'en' })
+r = await call('POST', '/api/projects/plurals/keys', {
+  key: 'inbox.count',
+  plural: true,
+  description: 'Unread',
+  values: { en: { one: '{{count}} message', other: '{{count}} messages' }, ja: { other: '{{count}}件' } },
+})
+assert.deepEqual(r.data.key.forms, ['one', 'few', 'many', 'other'], 'every form a project language needs (Russian few, many)')
+const pluralKeys = async () => (await call('GET', '/api/projects/plurals')).data.keys
+let keys = await pluralKeys()
+assert.deepEqual(keys.map((k) => k.key), ['inbox.count_few', 'inbox.count_many', 'inbox.count_one', 'inbox.count_other'])
+assert.ok(keys.every((k) => k.description === 'Unread'))
+assert.deepEqual(keys.find((k) => k.key === 'inbox.count_other').values, { en: '{{count}} messages', ja: '{{count}}件' })
+r = await call('POST', '/api/projects/plurals/keys', { key: 'inbox.count', plural: true })
+assert.equal(r.status, 409)
+r = await call('GET', '/api/pull/plurals?version=draft&lang=ja', undefined, { authorization: 'Bearer test-pull-token', cookie: '' })
+assert.deepEqual(r.data, { 'inbox.count_other': '{{count}}件' }, 'builds still get i18next suffixed keys')
+r = await call('POST', '/api/projects/plurals/keys', { key: 'inbox.empty', plural: true, zero: true, values: { en: { zero: 'No messages' } } })
+assert.deepEqual(r.data.key.forms, ['zero', 'one', 'few', 'many', 'other'], 'zero on request, though none of en, ru, ja has a zero form')
+assert.deepEqual((await pluralKeys()).find((k) => k.key === 'inbox.empty_zero').values, { en: 'No messages' })
+await call('DELETE', '/api/projects/plurals/keys', { keys: ['inbox.empty_zero', 'inbox.empty_one', 'inbox.empty_few', 'inbox.empty_many', 'inbox.empty_other'] })
+
+r = await call('PATCH', '/api/projects/plurals/keys', { key: 'inbox.count', newKey: 'inbox.unread', description: 'Unread messages', plural: true })
+assert.equal(r.status, 200)
+keys = await pluralKeys()
+assert.deepEqual(keys.map((k) => k.key), ['inbox.unread_few', 'inbox.unread_many', 'inbox.unread_one', 'inbox.unread_other'])
+assert.ok(keys.every((k) => k.description === 'Unread messages'))
+
+r = await call('POST', '/api/projects/plurals/keys/plural', { key: 'inbox.unread', plural: false })
+assert.equal(r.status, 200)
+keys = await pluralKeys()
+assert.deepEqual(keys.map((k) => [k.key, k.values]), [['inbox.unread', { en: '{{count}} messages', ja: '{{count}}件' }]], 'the other form becomes the key')
+
+r = await call('POST', '/api/projects/plurals/keys/plural', { key: 'inbox.unread', plural: true })
+assert.deepEqual(r.data.forms, ['one', 'few', 'many', 'other'])
+keys = await pluralKeys()
+assert.deepEqual(keys.find((k) => k.key === 'inbox.unread_other').values, { en: '{{count}} messages', ja: '{{count}}件' })
+assert.equal(keys.length, 4)
+
+await call('PATCH', '/api/projects/plurals', { languages: ['en', 'ru', 'ja', 'ar'] })
+r = await call('PUT', '/api/projects/plurals/translations', { key: 'inbox.unread_two', language: 'ar', value: 'رسالتان' })
+assert.equal(r.status, 404, 'no key without create')
+r = await call('PUT', '/api/projects/plurals/translations', { key: 'inbox.unread_two', language: 'ar', value: 'رسالتان', create: true })
+assert.equal(r.status, 200)
+r = await call('PUT', '/api/projects/plurals/translations', { key: 'home.title', language: 'ar', value: 'x', create: true })
+assert.equal(r.status, 400, 'create is only for plural forms')
+keys = await pluralKeys()
+assert.deepEqual(keys.find((k) => k.key === 'inbox.unread_two'), { key: 'inbox.unread_two', description: 'Unread messages', values: { ar: 'رسالتان' } })
+await call('DELETE', '/api/projects/plurals')
+ok('plurals: one key per form, group rename, make singular and plural again, new forms created on first save')
+
+// Every change is recorded with what it replaced; releases add the values they published.
+await call('POST', '/api/projects', { name: 'History', slug: 'hist', languages: ['en', 'fr'], baseLanguage: 'en' })
+await call('POST', '/api/projects/hist/keys', { key: 'cta', description: 'Button', values: { en: 'Start' } })
+await call('POST', '/api/projects/hist/releases', { note: 'v1' })
+await call('PUT', '/api/projects/hist/translations', { key: 'cta', language: 'en', value: 'Begin' })
+await call('PUT', '/api/projects/hist/translations', { key: 'cta', language: 'en', value: 'Begin' })
+await call('POST', '/api/projects/hist/import', { language: 'fr', entries: { cta: 'Commencer' } })
+await call('PUT', '/api/projects/hist/translations', { key: 'cta', language: 'fr', value: '' })
+r = await call('POST', '/api/projects/hist/keys/history', { keys: ['cta'] })
+assert.deepEqual(
+  r.data.edits.map((e) => [e.language, e.source, e.previous, e.value]),
+  [
+    ['fr', 'edit', 'Commencer', null],
+    ['fr', 'import', null, 'Commencer'],
+    ['en', 'edit', 'Start', 'Begin'],
+    ['en', 'add', null, 'Start'],
+  ],
+  'saving the same text twice records one change',
+)
+assert.deepEqual(r.data.releases.map((x) => [x.version, x.language, x.key, x.value]), [[1, 'en', 'cta', 'Start']])
+
+r = await call('POST', '/api/projects/hist/keys/duplicate', { key: 'cta' })
+assert.equal(r.data.key, 'cta_copy')
+r = await call('POST', '/api/projects/hist/keys/duplicate', { key: 'cta' })
+assert.equal(r.data.key, 'cta_copy2', 'the next free name')
+await call('POST', '/api/projects/hist/keys', { key: 'items', plural: true, values: { en: { one: '1 item', other: '{{count}} items' } } })
+r = await call('POST', '/api/projects/hist/keys/duplicate', { key: 'items', plural: true })
+assert.equal(r.data.key, 'items_copy')
+keys = (await call('GET', '/api/projects/hist')).data.keys
+assert.deepEqual(keys.find((k) => k.key === 'cta_copy'), { key: 'cta_copy', description: 'Button', values: { en: 'Begin' } })
+assert.deepEqual(
+  keys.filter((k) => k.key.startsWith('items_copy')).map((k) => [k.key, k.values.en ?? null]),
+  [['items_copy_one', '1 item'], ['items_copy_other', '{{count}} items']],
+)
+await call('DELETE', '/api/projects/hist')
+ok('history & duplicate: changes recorded with what they replaced, release values, key_copy / key_copy2, plural copies')
+
 r = await call('POST', '/api/projects/web-app/targets', { name: 'Prod', type: 'vercel_hook', config: { url: 'https://example.com/hook' } })
 assert.equal(r.status, 400)
 r = await call('POST', '/api/projects/web-app/targets', { name: 'Prod', type: 'vercel_hook', config: { url: 'https://api.vercel.com/v1/integrations/deploy/prj_x/abc' } })

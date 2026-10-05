@@ -1,0 +1,14 @@
+# Dependencies: `npm install` recreates them, and Vercel installs its own
+node_modules
+
+# Build output and the embedded database from `npm run dev:local`
+dist
+.data
+*.tsbuildinfo
+
+# Local env files and the Vercel project link
+.vercel
+.env*.local
+
+# OS clutter
+.DS_Store

@@ -74,3 +74,22 @@ export interface DeployLog {
   message: string
   createdAt: string
 }
+
+/** A recorded change to one translation: value null = cleared, previous null = it was empty. */
+export interface HistoryEdit {
+  key: string
+  language: string
+  value: string | null
+  previous: string | null
+  source: 'edit' | 'import' | 'add' | 'duplicate'
+  changedAt: string
+}
+
+/** The value a release published for a key. */
+export interface HistoryRelease {
+  version: number
+  createdAt: string
+  language: string
+  key: string
+  value: string
+}

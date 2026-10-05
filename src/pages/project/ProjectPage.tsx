@@ -72,14 +72,15 @@ export function ProjectPage({ slug, tab }: { slug: string; tab?: string }) {
   const nextVersion = (project.latestVersion ?? 0) + 1
 
   return (
-    <div className="flex flex-col">
+    // The Strings tab fills the screen height so its list scrolls and its bottom bar stays in view.
+    <div className={cx('flex flex-1 flex-col', active === 'strings' && 'min-h-0')}>
       <div className="border-b border-line bg-surface">
         <div className="flex flex-wrap items-start justify-between gap-4 px-5 pt-6">
           <div className="min-w-0">
             <a href="/" onClick={linkHandler('/')} className="text-sm text-muted hover:text-ink">
               Projects
             </a>
-            <h1 className="mt-0.5 text-2xl font-semibold tracking-tight">{project.name}</h1>
+            <h1 className="mt-0.5 text-2xl font-medium text-zinc-900 dark:text-white">{project.name}</h1>
             <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-muted">
               <span className="font-mono">{project.slug}</span>
               <div className="flex gap-1">
@@ -105,11 +106,10 @@ export function ProjectPage({ slug, tab }: { slug: string; tab?: string }) {
                 href={href}
                 onClick={linkHandler(href)}
                 aria-current={active === t.id ? 'page' : undefined}
+                // The design system's tab style (Tabs), as links so each tab keeps its own URL.
                 className={cx(
-                  'relative px-3 pt-1 pb-3 text-sm whitespace-nowrap',
-                  active === t.id
-                    ? 'font-semibold text-ink after:absolute after:inset-x-3 after:bottom-0 after:h-0.5 after:rounded-full after:bg-ink'
-                    : 'text-muted hover:text-ink',
+                  'relative px-3 pt-1 pb-3 text-sm font-medium whitespace-nowrap transition-colors after:absolute after:inset-x-3 after:bottom-0 after:h-0.5 after:bg-primary-500 after:transition',
+                  active === t.id ? 'text-primary-500' : 'text-zinc-900 after:scale-x-0 after:opacity-0 hover:text-primary-500 dark:text-white',
                 )}
               >
                 {t.label}

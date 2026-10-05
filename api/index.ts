@@ -8,6 +8,7 @@ import { checkPassword, clearedCookie, hasPullToken, hasSession, sessionCookie }
 import { getSql, type Row, type Sql } from './_lib/db.js'
 import { triggerTarget, validateTarget, type TargetConfig, type TargetType } from './_lib/deploy.js'
 import { nest, sortFlat, type Flat, type Snapshot } from './_lib/format.js'
+import { formsForLanguages, parsePluralKey, pluralKey, type PluralType } from './_lib/plurals.js'
 import {
   HttpError,
   LANG_RE,
@@ -78,6 +79,9 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 /* helpers                                                             */
 /* ------------------------------------------------------------------ */
 
+// A plural key counts once, as in the Strings tab: items_one + items_other are one key.
+const PLURAL_SUFFIX_RE = '_(ordinal_)?(zero|one|two|few|many|other)$'
+
 interface ProjectRow {
   id: number
   slug: string
@@ -115,7 +119,7 @@ function toProject(p: ProjectRow) {
 async function loadProject(sql: Sql, slug: string): Promise<ProjectRow> {
   const [p] = await sql<ProjectRow>`
     SELECT p.*,
-      (SELECT count(*)::int FROM translation_keys k WHERE k.project_id = p.id) AS key_count,
+      (SELECT count(DISTINCT regexp_replace(k.key, ${PLURAL_SUFFIX_RE}, ''))::int FROM translation_keys k WHERE k.project_id = p.id) AS key_count,
       (SELECT max(version) FROM releases r WHERE r.project_id = p.id) AS latest_version
     FROM projects p WHERE p.slug = ${slug}`
   if (!p) throw new HttpError(404, `No project called "${slug}"`)
@@ -146,6 +150,16 @@ async function draftSnapshot(sql: Sql, projectId: number): Promise<Snapshot> {
   const snap: Snapshot = {}
   for (const r of rows) (snap[r.language] ??= {})[r.key] = r.value
   return snap
+}
+
+/** The keys that make up a plural key: `base_one`, `base_other`… (or `base_ordinal_…`). */
+async function pluralMembers(sql: Sql, projectId: number, base: string, type: PluralType) {
+  const rows = await sql<{ id: number; key: string }>`
+    SELECT id, key FROM translation_keys WHERE project_id = ${projectId} AND starts_with(key, ${base + '_'})`
+  return rows.flatMap((r) => {
+    const parsed = parsePluralKey(r.key)
+    return parsed && parsed.base === base && parsed.type === type ? [{ id: r.id, key: r.key, form: parsed.form }] : []
+  })
 }
 
 interface TargetRow {
@@ -207,7 +221,7 @@ on('GET', '/api/projects', 'session', async () => {
   const sql = await getSql()
   const rows = await sql<ProjectRow>`
     SELECT p.*,
-      (SELECT count(*)::int FROM translation_keys k WHERE k.project_id = p.id) AS key_count,
+      (SELECT count(DISTINCT regexp_replace(k.key, ${PLURAL_SUFFIX_RE}, ''))::int FROM translation_keys k WHERE k.project_id = p.id) AS key_count,
       (SELECT max(version) FROM releases r WHERE r.project_id = p.id) AS latest_version
     FROM projects p ORDER BY lower(p.name)`
   return { projects: rows.map(toProject) }
@@ -288,22 +302,47 @@ on('POST', '/api/projects/:slug/keys', 'session', async ({ params, body }) => {
   const p = await loadProject(sql, params.slug)
   const key = validateKey(reqString(body, 'key', 255))
   const description = optString(body, 'description') ?? ''
-  const values: Flat = {}
+  // A plural key is stored the way the files hold it: one key per form (items_one, items_other…),
+  // with every form any project language needs, plus `zero` when asked (i18next uses key_zero
+  // for a count of 0 in every language). Its values come as { lang: { form: text } }.
+  const forms = body.plural === true ? formsForLanguages(p.languages, 'cardinal', body.zero === true) : null
+  const keys = forms ? forms.map((f) => pluralKey(key, 'cardinal', f)) : [key]
+  const values: { key: string; language: string; value: string }[] = []
   if (body.values && typeof body.values === 'object') {
     for (const [lang, value] of Object.entries(body.values as Record<string, unknown>)) {
-      if (typeof value === 'string' && value !== '') values[assertLanguage(p, lang)] = value
+      const language = assertLanguage(p, lang)
+      if (!forms) {
+        if (typeof value === 'string' && value !== '') values.push({ key, language, value })
+        continue
+      }
+      for (const form of forms) {
+        const text = (value as Record<string, unknown> | null)?.[form]
+        if (typeof text === 'string' && text !== '') values.push({ key: pluralKey(key, 'cardinal', form), language, value: text })
+      }
     }
+  }
+  if (forms) {
+    const [clash] = await sql<{ key: string }>`
+      SELECT key FROM translation_keys WHERE project_id = ${p.id}
+        AND (key = ${key} OR key IN (SELECT jsonb_array_elements_text(${JSON.stringify(keys)}::jsonb)))`
+    if (clash) throw new HttpError(409, `"${clash.key}" already exists`)
   }
   await sql`
     WITH k AS (
       INSERT INTO translation_keys (project_id, key, description)
-      VALUES (${p.id}, ${key}, ${description}) RETURNING id
+      SELECT ${p.id}, value, ${description} FROM jsonb_array_elements_text(${JSON.stringify(keys)}::jsonb)
+      RETURNING id, key
     ), t AS (
       INSERT INTO translations (key_id, language, value)
-      SELECT k.id, x.key, x.value FROM k, jsonb_each_text(${JSON.stringify(values)}::jsonb) x
+      SELECT k.id, x.language, x.value
+      FROM k JOIN jsonb_to_recordset(${JSON.stringify(values)}::jsonb) AS x(key text, language text, value text) ON x.key = k.key
+      RETURNING key_id, language, value
+    ), history AS (
+      INSERT INTO translation_history (key_id, language, value, previous, source)
+      SELECT key_id, language, value, NULL, 'add' FROM t
     )
     UPDATE projects SET content_updated_at = now() WHERE id = ${p.id}`
-  return { key: { key, description, values } }
+  return { key: { key, description, forms } }
 })
 
 on('PATCH', '/api/projects/:slug/keys', 'session', async ({ params, body }) => {
@@ -312,6 +351,19 @@ on('PATCH', '/api/projects/:slug/keys', 'session', async ({ params, body }) => {
   const key = reqString(body, 'key', 255)
   const newKey = body.newKey === undefined ? null : validateKey(reqString(body, 'newKey', 255))
   const description = optString(body, 'description') ?? null
+  if (body.plural === true) {
+    // Every form moves with the key: items_one, items_other… become stock_one, stock_other…
+    const type: PluralType = body.type === 'ordinal' ? 'ordinal' : 'cardinal'
+    const members = await pluralMembers(sql, p.id, key, type)
+    if (members.length === 0) throw new HttpError(404, `Plural key "${key}" does not exist`)
+    const renames = members.map((m) => ({ id: m.id, key: newKey ? pluralKey(newKey, type, m.form) : m.key }))
+    await sql`
+      UPDATE translation_keys t SET key = x.key, description = coalesce(${description}::text, t.description)
+      FROM jsonb_to_recordset(${JSON.stringify(renames)}::jsonb) AS x(id int, key text)
+      WHERE t.id = x.id`
+    if (newKey && newKey !== key) await touch(sql, p.id)
+    return { key: { key: newKey ?? key, description } }
+  }
   const rows = await sql`
     UPDATE translation_keys
     SET key = coalesce(${newKey}::text, key), description = coalesce(${description}::text, description)
@@ -320,6 +372,117 @@ on('PATCH', '/api/projects/:slug/keys', 'session', async ({ params, body }) => {
   if (!rows[0]) throw new HttpError(404, `Key "${key}" does not exist`)
   if (newKey && newKey !== key) await touch(sql, p.id)
   return { key: rows[0] }
+})
+
+/** Turns a key into a plural key (items → items_one, items_other…) or back (items_other → items). */
+on('POST', '/api/projects/:slug/keys/plural', 'session', async ({ params, body }) => {
+  const sql = await getSql()
+  const p = await loadProject(sql, params.slug)
+  const key = reqString(body, 'key', 255)
+  if (body.plural === true) {
+    const [row] = await sql<{ id: number; description: string }>`
+      SELECT id, description FROM translation_keys WHERE project_id = ${p.id} AND key = ${key}`
+    if (!row) throw new HttpError(404, `Key "${key}" does not exist`)
+    const forms = formsForLanguages(p.languages)
+    const added = forms.filter((f) => f !== 'other').map((f) => pluralKey(key, 'cardinal', f))
+    const [clash] = await sql<{ key: string }>`
+      SELECT key FROM translation_keys WHERE project_id = ${p.id}
+        AND key IN (SELECT jsonb_array_elements_text(${JSON.stringify([pluralKey(key, 'cardinal', 'other'), ...added])}::jsonb))`
+    if (clash) throw new HttpError(409, `"${clash.key}" already exists`)
+    // The current text becomes the "other" form, the one i18next falls back to.
+    await sql`
+      WITH renamed AS (UPDATE translation_keys SET key = ${pluralKey(key, 'cardinal', 'other')} WHERE id = ${row.id}),
+      added AS (
+        INSERT INTO translation_keys (project_id, key, description)
+        SELECT ${p.id}, value, ${row.description} FROM jsonb_array_elements_text(${JSON.stringify(added)}::jsonb)
+      )
+      UPDATE projects SET content_updated_at = now() WHERE id = ${p.id}`
+    return { key, plural: true, forms }
+  }
+  const type: PluralType = body.type === 'ordinal' ? 'ordinal' : 'cardinal'
+  const members = await pluralMembers(sql, p.id, key, type)
+  const other = members.find((m) => m.form === 'other')
+  if (!other) throw new HttpError(404, `Plural key "${key}" does not exist`)
+  const dropped = members.filter((m) => m !== other).map((m) => m.id)
+  // The "other" form becomes the key; the other forms and their translations go.
+  await sql`
+    WITH dropped AS (
+      DELETE FROM translation_keys WHERE id IN (SELECT jsonb_array_elements_text(${JSON.stringify(dropped)}::jsonb)::int)
+    ), renamed AS (UPDATE translation_keys SET key = ${key} WHERE id = ${other.id})
+    UPDATE projects SET content_updated_at = now() WHERE id = ${p.id}`
+  return { key, plural: false }
+})
+
+/** Copies a key (all forms of a plural key) to `key_copy`, or `key_copy2`… when that's taken. */
+on('POST', '/api/projects/:slug/keys/duplicate', 'session', async ({ params, body }) => {
+  const sql = await getSql()
+  const p = await loadProject(sql, params.slug)
+  const key = reqString(body, 'key', 255)
+  const type: PluralType = body.type === 'ordinal' ? 'ordinal' : 'cardinal'
+  const members =
+    body.plural === true
+      ? await pluralMembers(sql, p.id, key, type)
+      : (await sql<{ id: number; key: string }>`
+          SELECT id, key FROM translation_keys WHERE project_id = ${p.id} AND key = ${key}`).map((r) => ({ ...r, form: null }))
+  if (members.length === 0) throw new HttpError(404, `Key "${key}" does not exist`)
+
+  const nearby = new Set(
+    (await sql<{ key: string }>`
+      SELECT key FROM translation_keys WHERE project_id = ${p.id} AND starts_with(key, ${key + '_copy'})`).map((r) => r.key),
+  )
+  const taken = (name: string) => nearby.has(name) || [...nearby].some((k) => parsePluralKey(k)?.base === name)
+  let name = `${key}_copy`
+  for (let n = 2; taken(name); n++) name = `${key}_copy${n}`
+  const copies = members.map((m) => ({ source_id: m.id, key: validateKey(m.form ? pluralKey(name, type, m.form) : name) }))
+
+  await sql`
+    WITH src AS (SELECT * FROM jsonb_to_recordset(${JSON.stringify(copies)}::jsonb) AS x(source_id int, key text)),
+    k AS (
+      INSERT INTO translation_keys (project_id, key, description)
+      SELECT ${p.id}, src.key, tk.description FROM src JOIN translation_keys tk ON tk.id = src.source_id
+      RETURNING id, key
+    ), t AS (
+      INSERT INTO translations (key_id, language, value)
+      SELECT k.id, tr.language, tr.value FROM k JOIN src ON src.key = k.key JOIN translations tr ON tr.key_id = src.source_id
+      RETURNING key_id, language, value
+    ), history AS (
+      INSERT INTO translation_history (key_id, language, value, previous, source)
+      SELECT key_id, language, value, NULL, 'duplicate' FROM t
+    )
+    UPDATE projects SET content_updated_at = now() WHERE id = ${p.id}`
+  return { key: name }
+})
+
+/**
+ * Earlier values of some keys (a key, or every form of a plural key): recorded changes,
+ * newest first, and the value each release published.
+ */
+on('POST', '/api/projects/:slug/keys/history', 'session', async ({ params, body }) => {
+  const sql = await getSql()
+  const p = await loadProject(sql, params.slug)
+  const keys = body.keys
+  if (!Array.isArray(keys) || keys.length === 0 || keys.length > 20 || !keys.every((k) => typeof k === 'string')) {
+    throw new HttpError(400, '"keys" must be a list of up to 20 keys')
+  }
+  const list = JSON.stringify(keys)
+  const [edits, releases] = await Promise.all([
+    sql<{ key: string; language: string; value: string | null; previous: string | null; source: string; changed_at: string }>`
+      SELECT k.key, h.language, h.value, h.previous, h.source, h.changed_at
+      FROM translation_history h JOIN translation_keys k ON k.id = h.key_id
+      WHERE k.project_id = ${p.id} AND k.key IN (SELECT jsonb_array_elements_text(${list}::jsonb))
+      ORDER BY h.changed_at DESC, h.id DESC LIMIT 300`,
+    sql<{ version: number; created_at: string; language: string; key: string; value: string }>`
+      SELECT r.version, r.created_at, l.key AS language, k.key, l.value ->> k.key AS value
+      FROM releases r
+      CROSS JOIN jsonb_each(r.snapshot) l
+      CROSS JOIN jsonb_array_elements_text(${list}::jsonb) AS k(key)
+      WHERE r.project_id = ${p.id} AND l.value ? k.key
+      ORDER BY r.version DESC LIMIT 500`,
+  ])
+  return {
+    edits: edits.map((e) => ({ key: e.key, language: e.language, value: e.value, previous: e.previous, source: e.source, changedAt: e.changed_at })),
+    releases: releases.map((r) => ({ version: r.version, createdAt: r.created_at, language: r.language, key: r.key, value: r.value })),
+  }
 })
 
 on('DELETE', '/api/projects/:slug/keys', 'session', async ({ params, body }) => {
@@ -349,20 +512,45 @@ on('PUT', '/api/projects/:slug/translations', 'session', async ({ params, body }
   if (typeof body.value !== 'string') throw new HttpError(400, '"value" must be a string')
   const value = body.value
   if (value.length > 20_000) throw new HttpError(400, 'Translations are limited to 20,000 characters')
+  if (body.create === true && value !== '') {
+    // A plural form a language needs but no other language had yet (Russian "few" next to
+    // English one/other) only becomes a key once someone writes it. It shares the group's description.
+    const form = parsePluralKey(validateKey(key))
+    if (!form) throw new HttpError(400, `"${key}" is not a plural form`)
+    await sql`
+      INSERT INTO translation_keys (project_id, key, description)
+      SELECT ${p.id}, ${key}, coalesce((
+        SELECT description FROM translation_keys
+        WHERE project_id = ${p.id} AND key = ${pluralKey(form.base, form.type, 'other')}
+      ), '')
+      ON CONFLICT (project_id, key) DO NOTHING`
+  }
 
+  // `old` reads the value before this statement changes it, so the history row knows what it replaced.
   const [r] =
     value === ''
       ? await sql<{ found: boolean }>`
           WITH k AS (SELECT id FROM translation_keys WHERE project_id = ${p.id} AND key = ${key}),
+          old AS (SELECT t.key_id, t.value FROM translations t JOIN k ON k.id = t.key_id WHERE t.language = ${language}),
           d AS (DELETE FROM translations WHERE key_id IN (SELECT id FROM k) AND language = ${language}),
+          history AS (
+            INSERT INTO translation_history (key_id, language, value, previous, source)
+            SELECT key_id, ${language}::text, NULL, value, 'edit' FROM old
+          ),
           bump AS (UPDATE projects SET content_updated_at = now() WHERE id = ${p.id} AND EXISTS (SELECT 1 FROM k))
           SELECT EXISTS (SELECT 1 FROM k) AS found`
       : await sql<{ found: boolean }>`
           WITH k AS (SELECT id FROM translation_keys WHERE project_id = ${p.id} AND key = ${key}),
+          old AS (SELECT t.value FROM translations t JOIN k ON k.id = t.key_id WHERE t.language = ${language}),
           up AS (
             INSERT INTO translations (key_id, language, value)
             SELECT id, ${language}, ${value} FROM k
             ON CONFLICT (key_id, language) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+          ),
+          history AS (
+            INSERT INTO translation_history (key_id, language, value, previous, source)
+            SELECT k.id, ${language}::text, ${value}::text, (SELECT value FROM old), 'edit' FROM k
+            WHERE (SELECT value FROM old) IS DISTINCT FROM ${value}::text
           ),
           bump AS (UPDATE projects SET content_updated_at = now() WHERE id = ${p.id} AND EXISTS (SELECT 1 FROM k))
           SELECT EXISTS (SELECT 1 FROM k) AS found`
@@ -399,12 +587,18 @@ on('POST', '/api/projects/:slug/import', 'session', async ({ params, body }) => 
       SELECT id, key FROM new_keys
       UNION ALL
       SELECT k.id, k.key FROM translation_keys k JOIN input i ON i.key = k.key WHERE k.project_id = ${p.id}
+    ), previous AS (
+      SELECT t.key_id, t.value FROM translations t JOIN all_keys a ON a.id = t.key_id WHERE t.language = ${language}
     ), upserted AS (
       INSERT INTO translations (key_id, language, value)
       SELECT a.id, ${language}, i.value FROM all_keys a JOIN input i ON i.key = a.key
       ON CONFLICT (key_id, language) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
         WHERE ${overwrite}::boolean AND translations.value IS DISTINCT FROM EXCLUDED.value
-      RETURNING (xmax = 0) AS inserted
+      RETURNING key_id, value, (xmax = 0) AS inserted
+    ), history AS (
+      INSERT INTO translation_history (key_id, language, value, previous, source)
+      SELECT u.key_id, ${language}::text, u.value, pv.value, 'import'
+      FROM upserted u LEFT JOIN previous pv ON pv.key_id = u.key_id
     ), bump AS (
       UPDATE projects SET content_updated_at = now() WHERE id = ${p.id}
     )

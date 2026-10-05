@@ -31,11 +31,14 @@ npm install
 npm run dev:local   # embedded Postgres in .data/, password "local", pull token "local"
 ```
 
+The UI is built with Bodyguard's design system (`@bodyguard-ai/design-system`, on GitHub's npm registry) and Font Awesome Pro, so `npm install` needs the same two tokens as the dashboard in your shell: `NPM_TOKEN` and `FONTAWESOME_NPM_AUTH_TOKEN` (`.npmrc` reads them).
+
 ## Deploy
 
 1. Push this folder to a Git repo and import it in Vercel (framework preset: Vite, detected automatically).
 2. In the Vercel project, go to **Storage** and connect a **Neon** database. That sets `DATABASE_URL`. Tables are created automatically on the first request.
 3. Add environment variables:
+   - `NPM_TOKEN` and `FONTAWESOME_NPM_AUTH_TOKEN`: the build installs the design system and Font Awesome Pro from private registries, like the dashboard's.
    - `APP_PASSWORD`: the team password for the editor.
    - `PULL_TOKEN`: what app builds use to pull. Generate one with `openssl rand -hex 32`.
    - `GITHUB_TOKEN` (optional): a fine-grained token with **Actions: Read and write** on repos you want to trigger workflows in. For another org, add e.g. `GITHUB_TOKEN_MOBILE` and set it as the target's token variable.
@@ -58,6 +61,22 @@ If Neon **Preview Branching** is enabled, preview deployments of i18n Hub get th
 2. Export JSON from Lokalise (one file per language, nested or flat), or just take the files already committed in each repo.
 3. On the Strings tab, choose **Import** and drop all files at once. The language is guessed from the file name (`en.json`, `fr-FR.json`, `translation.fr.json`) and a Lokalise `{ "fr": { … } }` wrapper is unwrapped.
 4. Publish v1, wire up the app (below), then remove the Lokalise pull from that repo.
+
+## Key actions and history
+
+Under each key: **Edit**, **Copy** (the key name, as your code uses it), **Duplicate** (to `key_copy`, every form of a plural key included), **History** and **Delete** (two clicks).
+
+Every change to a translation is recorded with the text it replaced: edits, imports, new keys and duplicates. **History** shows each language's earlier texts, newest first, with the releases they were live in, plus the values older releases published from before recording started. **Restore** puts an earlier text back, as a new change. Changes are recorded from the moment this version is deployed; there's no author, since everyone shares the team password.
+
+## Plural keys
+
+Plurals are stored the way i18next reads them: one key per form (`items_one`, `items_other`, `items_few`…, ordinals as `place_ordinal_two`), so imports and the files builds pull are plain i18next JSON. The Strings tab groups the forms into one plural key and asks each language only for the forms its plural rules use for everyday numbers: English one and other, Japanese only other, Russian one, few, many and other. Each form shows the counts that pick it (Russian one: 1, 21, 31…).
+
+- A key with `_other` and at least one more form is plural. A lone `gender_other` stays an ordinary key.
+- **Add key → Plural** creates every form the project's languages need. **Edit key → Make plural** turns the current text into the `other` form; **Make singular** keeps `other` and removes the rest.
+- A form no language had yet (adding Russian to an English project) becomes a key the first time someone writes it.
+- **A different text for 0** ("Aucun message" next to "1 message"): i18next reads `key_zero` for a count of 0 in every language, before the language's own form. Use **+ Text for 0** under a language in the editor, or **Separate text for 0** when adding the key. It's per language and optional: French can have one while English keeps "0 messages", and 0 uses the language's own form (French one, English other) where there's none. **×** on a language's zero row removes it there; the last one removes the `_zero` key. Edit key → **Remove everywhere** clears it in every language. Languages whose rules have a real zero form (Arabic, Welsh) always get it, as a required form.
+- French, Spanish, Italian and Portuguese also have a `many` form in CLDR that only millions use (1 000 000 de…). It isn't required and isn't offered; a `many` text that's already there (from an import) is still shown, like any form a language doesn't need but has text for.
 
 ## Wiring up an app
 
@@ -104,8 +123,11 @@ All routes are under `/api`. Everything except auth and pull needs the session c
 | POST | `/auth/login` `{ password }`, `/auth/logout`; GET `/auth/me` | |
 | GET, POST | `/projects` | |
 | GET, PATCH, DELETE | `/projects/:slug` | PATCH `{ name, languages, baseLanguage }`; removing a language deletes its draft strings |
-| POST, PATCH, DELETE | `/projects/:slug/keys` | Key in the body: `{ key, description, values }`, `{ key, newKey, description }`, `{ keys: [] }` |
-| PUT | `/projects/:slug/translations` | `{ key, language, value }`; empty value deletes |
+| POST, PATCH, DELETE | `/projects/:slug/keys` | Key in the body: `{ key, description, values }`, `{ key, newKey, description }`, `{ keys: [] }`. With `plural: true`, POST creates every form (`values: { lang: { form: text } }`) and PATCH renames all of them |
+| POST | `/projects/:slug/keys/plural` | `{ key, plural }`: makes a key plural (its text becomes `other`) or singular (keeps `other`) |
+| POST | `/projects/:slug/keys/duplicate` | `{ key, plural?, type? }`: copies the key (every form of a plural key) to `key_copy`, `key_copy2`… |
+| POST | `/projects/:slug/keys/history` | `{ keys }` (up to 20): recorded changes, newest first, and the value each release published |
+| PUT | `/projects/:slug/translations` | `{ key, language, value, create }`; empty value deletes, `create` adds a missing plural form |
 | POST | `/projects/:slug/import` | `{ language, entries: { flat }, overwrite }` |
 | GET, POST | `/projects/:slug/releases` | POST `{ note, targetIds }` publishes and deploys |
 | GET | `/projects/:slug/releases/:version` | Snapshot |
